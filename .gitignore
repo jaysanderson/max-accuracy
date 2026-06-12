@@ -1,0 +1,8 @@
+node_modules/
+dist/
+dev-dist/
+.DS_Store
+*.log
+.claude/settings.local.json
+tools/calibrate/.venv/
+__pycache__/

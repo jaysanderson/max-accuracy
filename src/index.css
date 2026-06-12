@@ -1,0 +1,30 @@
+@import 'tailwindcss';
+
+/* Agentic RAG brand (from The Vault arag-logo.svg): Progress green + slate.
+   Semantic colours (amber = warning, red = error, soft green chips) are NOT
+   brand — they keep their meaning and stay as-is. */
+@theme {
+  --color-brand: #5ce500;
+  --color-brand-light: #8aff4f;
+  --color-brand-dark: #46b800;
+  --color-brand-ink: #122b00;
+  --color-brand-slate: #4b4e52;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overscroll-behavior: none;
+  background: #09090b;
+}
+
+/* Field conditions: no accidental text selection while dragging handles */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+canvas,
+video {
+  user-select: none;
+  -webkit-user-select: none;
+}
