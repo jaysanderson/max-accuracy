@@ -83,6 +83,25 @@ detector fills that gap deterministically (js-aruco2 was the alternative —
 not needed). Marker rendering and decoding share `src/lib/aruco.ts` and are
 round-trip unit-tested.
 
+## Realistic accuracy ladder (phone-photogrammetry research, applied here)
+
+| Setup | Expected | Good for |
+|---|---|---|
+| Single shot, bank card, calibrated | ~1–2% (20–40 mm) | quoting |
+| Two markers spanning the window, calibrated, gated | ~0.5% (≈10 mm) | ordering most blinds |
+| + 3-photo burst (default), focus locked, print-scale verified, frame filled | ~0.1–0.2% (2–4 mm) | manufacture-grade |
+| Below ~5 mm | use a laser meter as the final check-measure | — |
+
+The hardening that buys the bottom rows (all built in): **burst averaging**
+(N frames, datum transferred by patch matching, median width + spread →
+confidence), **AF/AE lock** for the burst (autofocus physically moves lens
+elements and changes intrinsics), **edge-fitted sub-pixel marker corners**
+(plain ArUco corner accuracy is poor; we intersect gradient-fitted edge
+lines, AprilTag-style), **print-scale correction** (measure the sheet's
+100 mm ruler, the app corrects marker sizes — printers run 0.5–1% off),
+**frame-fill hints**, and **staleness nudges** (phone intrinsics drift;
+profiles and diagnostics older than 30 days are flagged).
+
 ## Accuracy test protocol (run this before calling Phase 1 done)
 
 1. Pick **≥ 3 windows of different widths**, including **one ≥ 1900 mm** (the
@@ -93,6 +112,9 @@ round-trip unit-tested.
 3. Repeat the two-marker and card sets **with and without the device profile**
    (deactivate it in Profiles) on a device the diagnostic flagged as
    distorting — the harness's profile filter must show the improvement.
+   Also repeat one window with `capture.burstCount` set to 1 vs 3 (Settings)
+   to prove the burst-vs-single delta, and check the spread column stays
+   under `quality.burstSpreadAmberPct`.
 4. Open **Test results**: PASS requires median |error| ≤ 2% overall and
    ≤ 1% two-marker. Export the CSV and keep it with the device + profile.
 

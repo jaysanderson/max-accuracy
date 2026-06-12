@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BigButton, Card, Chip, ModeToggle, Toggle } from '../components/ui';
+import { getConfig } from '../config';
 import { db, deviceLabel, getActiveProfile, getTestMode, setTestMode } from '../db';
 import { hasSeenIntro, markIntroSeen, setUiMode, useUiMode } from '../lib/uiMode';
 import { initCv } from '../lib/workerClient';
@@ -28,7 +29,7 @@ const INTRO_STEPS = [
 export function HomeScreen(props: { onNav: (r: NavTarget) => void }) {
   const uiMode = useUiMode();
   const [caps, setCaps] = useState<CvCapabilities | null>(null);
-  const [profileName, setProfileName] = useState<string | null>(null);
+  const [profileInfo, setProfileInfo] = useState<{ name: string; ageDays: number } | null>(null);
   const [diag, setDiag] = useState<DiagnosticRecord | null>(null);
   const [testMode, setTm] = useState(getTestMode());
   const [showIntro, setShowIntro] = useState(!hasSeenIntro());
@@ -36,7 +37,11 @@ export function HomeScreen(props: { onNav: (r: NavTarget) => void }) {
 
   useEffect(() => {
     initCv().then(setCaps).catch((e) => setCaps({ loaded: false, error: String(e) } as CvCapabilities));
-    getActiveProfile().then((p) => setProfileName(p?.name ?? null));
+    getActiveProfile().then((p) =>
+      setProfileInfo(
+        p ? { name: p.name, ageDays: (Date.now() - new Date(p.createdAt).getTime()) / 86400000 } : null,
+      ),
+    );
     db.diagnostics
       .orderBy('createdAt')
       .reverse()
@@ -166,14 +171,29 @@ export function HomeScreen(props: { onNav: (r: NavTarget) => void }) {
         <Chip level={caps === null ? 'neutral' : caps.loaded ? 'green' : 'red'}>
           {caps === null ? 'OpenCV loading…' : caps.loaded ? 'OpenCV ready' : 'OpenCV failed'}
         </Chip>
-        <Chip level={profileName ? 'green' : 'amber'}>{profileName ? `profile: ${profileName}` : 'no device profile'}</Chip>
-        {diag ? (
-          <Chip level={diag.verdict === 'pre-corrected' ? 'green' : 'amber'}>
-            {diag.verdict === 'pre-corrected' ? 'lens: pre-corrected' : 'lens: distortion present'}
-          </Chip>
-        ) : (
-          <Chip level="neutral">diagnostic not run</Chip>
-        )}
+        {(() => {
+          const cfgQ = getConfig().quality;
+          const profileStale = profileInfo !== null && profileInfo.ageDays > cfgQ.profileStaleDays;
+          const diagAgeDays = diag ? (Date.now() - new Date(diag.createdAt).getTime()) / 86400000 : null;
+          const diagStale = diagAgeDays !== null && diagAgeDays > cfgQ.diagnosticStaleDays;
+          return (
+            <>
+              <Chip level={profileInfo ? (profileStale ? 'amber' : 'green') : 'amber'}>
+                {profileInfo
+                  ? `profile: ${profileInfo.name}${profileStale ? ` (${Math.round(profileInfo.ageDays)}d old — re-verify)` : ''}`
+                  : 'no device profile'}
+              </Chip>
+              {diag ? (
+                <Chip level={diagStale ? 'amber' : diag.verdict === 'pre-corrected' ? 'green' : 'amber'}>
+                  {diag.verdict === 'pre-corrected' ? 'lens: pre-corrected' : 'lens: distortion present'}
+                  {diagStale ? ` (${Math.round(diagAgeDays!)}d old — re-run)` : ''}
+                </Chip>
+              ) : (
+                <Chip level="neutral">diagnostic not run</Chip>
+              )}
+            </>
+          );
+        })()}
       </div>
 
       {caps && !caps.loaded && (

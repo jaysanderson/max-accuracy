@@ -51,7 +51,7 @@ export default function App() {
           onRetake={() => setRoute('capture')}
           onSaved={() => setRoute(setup.testMode ? 'testlog' : 'home')}
           onAbort={() => {
-            session.shot = null;
+            session.burst = null;
             setRoute('capture');
           }}
         />

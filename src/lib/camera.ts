@@ -25,6 +25,13 @@ export interface CameraState {
   captureFullRes: () => Promise<FullResCapture>;
   /** Grab a downscaled frame for live analysis. Returns null until ready. */
   grabAnalysisFrame: (targetHeight: number) => ImageData | null;
+  /**
+   * Lock AF/AE/AWB at their current values so the lens stops moving between
+   * frames (autofocus physically shifts elements and changes intrinsics).
+   * Returns true if the browser honoured at least the focus lock.
+   */
+  lockCapture: () => Promise<boolean>;
+  unlockCapture: () => Promise<void>;
 }
 
 export function useCamera(): CameraState {
@@ -121,5 +128,54 @@ export function useCamera(): CameraState {
     return ctx.getImageData(0, 0, w, h);
   }, []);
 
-  return { videoRef, ready, error, captureFullRes, grabAnalysisFrame };
+  const lockCapture = useCallback(async (): Promise<boolean> => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track) return false;
+    try {
+      // These constraint names are standardised but typed loosely across browsers.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const caps = (track.getCapabilities?.() ?? {}) as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const settings = (track.getSettings?.() ?? {}) as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const advanced: any[] = [];
+      let focusLockable = false;
+      if (caps.focusMode?.includes?.('manual') && typeof settings.focusDistance === 'number') {
+        advanced.push({ focusMode: 'manual', focusDistance: settings.focusDistance });
+        focusLockable = true;
+      }
+      if (caps.exposureMode?.includes?.('manual') && typeof settings.exposureTime === 'number') {
+        advanced.push({ exposureMode: 'manual', exposureTime: settings.exposureTime });
+      }
+      if (caps.whiteBalanceMode?.includes?.('manual') && typeof settings.colorTemperature === 'number') {
+        advanced.push({ whiteBalanceMode: 'manual', colorTemperature: settings.colorTemperature });
+      }
+      if (!advanced.length) return false;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await track.applyConstraints({ advanced } as any);
+      return focusLockable;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const unlockCapture = useCallback(async (): Promise<void> => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track) return;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const caps = (track.getCapabilities?.() ?? {}) as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const advanced: any[] = [];
+      if (caps.focusMode?.includes?.('continuous')) advanced.push({ focusMode: 'continuous' });
+      if (caps.exposureMode?.includes?.('continuous')) advanced.push({ exposureMode: 'continuous' });
+      if (caps.whiteBalanceMode?.includes?.('continuous')) advanced.push({ whiteBalanceMode: 'continuous' });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (advanced.length) await track.applyConstraints({ advanced } as any);
+    } catch {
+      /* best effort */
+    }
+  }, []);
+
+  return { videoRef, ready, error, captureFullRes, grabAnalysisFrame, lockCapture, unlockCapture };
 }

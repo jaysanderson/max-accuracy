@@ -196,7 +196,7 @@ export function TestLogScreen({ onBack }: { onBack: () => void }) {
         <table className="w-full min-w-[860px] text-left text-xs">
           <thead className="bg-zinc-900 text-zinc-400">
             <tr>
-              {['when', 'mode', 'datum', 'window', 'measured', 'true', 'err mm', 'err %', 'conf', 'reproj', 'tilt°', 'profile', 'ovr', ''].map((h) => (
+              {['when', 'mode', 'datum', 'window', 'measured', 'true', 'err mm', 'err %', 'conf', 'reproj', 'burst', 'spread%', 'tilt°', 'profile', 'ovr', ''].map((h) => (
                 <th key={h} className="px-2 py-2 font-semibold">{h}</th>
               ))}
             </tr>
@@ -220,6 +220,8 @@ export function TestLogScreen({ onBack }: { onBack: () => void }) {
                   </span>
                 </td>
                 <td className="px-2 py-1.5 font-mono">{r.reprojErrMm?.toFixed(2) ?? '—'}</td>
+                <td className="px-2 py-1.5 font-mono">{r.burstCount ?? 1}</td>
+                <td className="px-2 py-1.5 font-mono">{r.widthSpreadPct?.toFixed(2) ?? '—'}</td>
                 <td className="px-2 py-1.5 font-mono">
                   {r.pitchDeg !== null ? Math.max(Math.abs(r.pitchDeg), Math.abs(r.rollDeg ?? 0)).toFixed(1) : '—'}
                 </td>
@@ -241,7 +243,7 @@ export function TestLogScreen({ onBack }: { onBack: () => void }) {
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={14} className="px-3 py-6 text-center text-zinc-500">
+                <td colSpan={16} className="px-3 py-6 text-center text-zinc-500">
                   No measurements yet. Enable Test Mode, measure a window, enter the tape-measured truth.
                   Protocol: same window 5× per mode, ≥3 windows including one ≥1900 mm, with and without the profile.
                 </td>

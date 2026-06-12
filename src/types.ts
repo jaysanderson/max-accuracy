@@ -43,6 +43,10 @@ export interface CaptureMeta {
   height: number;
   deviceLabel: string;
   captureSource: 'ImageCapture' | 'videoFrame';
+  /** AF/AE/AWB were locked for the (burst) capture. */
+  focusLocked: boolean;
+  /** Reference span as a fraction of frame width at capture (frame-fill discipline). */
+  refSpanFrac: number | null;
 }
 
 export interface QualityCheck {
@@ -86,6 +90,11 @@ export interface MeasurementRecord {
   windowLabel: string;
   markerSizeMm: number | null;
   markerSeparationMm: number | null;
+  /** Burst stats: frames used and width spread across them (% of width). */
+  burstCount: number;
+  widthSpreadPct: number | null;
+  focusLocked: boolean | null;
+  refSpanFrac: number | null;
   thumb?: Blob;
 }
 
@@ -112,6 +121,12 @@ export interface MeasureSetup {
 
 export interface CapturedShot {
   bitmap: ImageBitmap;
+  meta: CaptureMeta;
+}
+
+/** A full burst: frame 0 is the master (displayed, marked); the rest refine the width. */
+export interface CapturedBurst {
+  frames: ImageBitmap[];
   meta: CaptureMeta;
 }
 

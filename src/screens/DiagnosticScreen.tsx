@@ -3,6 +3,7 @@ import { BigButton, Card, Chip, Screen } from '../components/ui';
 import { getConfig } from '../config';
 import { db, deviceLabel, getActiveProfile } from '../db';
 import { useCamera } from '../lib/camera';
+import { snapPointsToEdge } from '../lib/edgeSnap';
 import { fitLineMaxDeviation } from '../lib/geometry';
 import { undistortImage } from '../lib/workerClient';
 import type { Pt } from '../types';
@@ -90,49 +91,11 @@ export function DiagnosticScreen({ onBack }: { onBack: () => void }) {
     if (next.length === 2) analyze(next[0], next[1]);
   }
 
-  /** Snap N points along the tapped chord to the strongest perpendicular gradient (sub-pixel via parabola). */
+  /** Snap N points along the tapped chord to the strongest perpendicular gradient (shared lib, sub-pixel). */
   function analyze(a: Pt, b: Pt) {
     const gray = grayRef.current!;
     const { data, w, h } = gray;
-    const px = (x: number, y: number) => {
-      const xi = Math.max(0, Math.min(w - 1, Math.round(x)));
-      const yi = Math.max(0, Math.min(h - 1, Math.round(y)));
-      return data[yi * w + xi];
-    };
-    const len = Math.hypot(b.x - a.x, b.y - a.y);
-    const ux = (b.x - a.x) / len;
-    const uy = (b.y - a.y) / len;
-    const nx = -uy; // perpendicular
-    const ny = ux;
-    const R = cfg.gradientSearchHalfRangePx;
-    const N = cfg.samplePoints;
-    const samples: Pt[] = [];
-    for (let i = 0; i < N; i++) {
-      const t = (i + 0.5) / N;
-      const cx = a.x + (b.x - a.x) * t;
-      const cy = a.y + (b.y - a.y) * t;
-      let bestOff = 0;
-      let bestMag = -1;
-      const mags = new Float32Array(2 * R + 1);
-      for (let o = -R; o <= R; o++) {
-        const m = Math.abs(
-          px(cx + nx * (o + 1), cy + ny * (o + 1)) - px(cx + nx * (o - 1), cy + ny * (o - 1)),
-        );
-        mags[o + R] = m;
-        if (m > bestMag) {
-          bestMag = m;
-          bestOff = o;
-        }
-      }
-      // Sub-pixel: parabola through the peak and its neighbours
-      let off = bestOff;
-      const k = bestOff + R;
-      if (k > 0 && k < 2 * R) {
-        const denom = mags[k - 1] - 2 * mags[k] + mags[k + 1];
-        if (Math.abs(denom) > 1e-6) off = bestOff + (0.5 * (mags[k - 1] - mags[k + 1])) / denom;
-      }
-      samples.push({ x: cx + nx * off, y: cy + ny * off });
-    }
+    const samples = snapPointsToEdge(data, w, h, a, b, cfg.samplePoints, cfg.gradientSearchHalfRangePx);
     const { maxDev } = fitLineMaxDeviation(samples);
     const bowPct = (maxDev / w) * 100;
     const verdict = bowPct > cfg.bowVerdictPctOfFrame ? 'distortion-present' : 'pre-corrected';

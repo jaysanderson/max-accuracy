@@ -8,6 +8,7 @@
  */
 import { decodeMarkerBits } from '../lib/aruco';
 import { computeHomography, orderQuadCorners } from '../lib/geometry';
+import { refineQuadCorners } from '../lib/quadRefine';
 import type { CvCapabilities, DetectedMarker, Pt } from '../types';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -194,18 +195,9 @@ function sampleCells(warpedGray: CvMat): number[][] {
 }
 
 function refineCorners(gray: CvMat, corners: Pt[]): Pt[] {
-  if (!caps.cornerSubPix) return corners;
-  const mat = cv.matFromArray(corners.length, 1, cv.CV_32FC2, corners.flatMap((p) => [p.x, p.y]));
-  try {
-    const criteria = new cv.TermCriteria(cv.TermCriteria_EPS + cv.TermCriteria_COUNT, 30, 0.01);
-    cv.cornerSubPix(gray, mat, new cv.Size(5, 5), new cv.Size(-1, -1), criteria);
-    const d = mat.data32F as Float32Array;
-    return corners.map((_, i) => ({ x: d[i * 2], y: d[i * 2 + 1] }));
-  } catch {
-    return corners;
-  } finally {
-    freeAll(mat);
-  }
+  // AprilTag-style edge-line intersection — sub-pixel, deterministic, and
+  // independent of cornerSubPix (absent from the vendored OpenCV build).
+  return refineQuadCorners(gray.data as Uint8Array, gray.cols, gray.rows, corners);
 }
 
 function detectArucoMarkers(gray: CvMat, refine: boolean): DetectedMarker[] {
@@ -557,6 +549,8 @@ self.onmessage = async (e: MessageEvent<WorkerMsg>) => {
             markers,
             cardQuad: card.quad,
             cardConfidence: card.confidence,
+            frameW: img.width,
+            frameH: img.height,
           });
         } finally {
           freeAll(rgba, gray);

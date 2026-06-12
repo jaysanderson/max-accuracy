@@ -30,6 +30,10 @@ export function measurementsToCsv(records: MeasurementRecord[]): string {
     'deviceLabel',
     'markerSizeMm',
     'markerSeparationMm',
+    'burstCount',
+    'widthSpreadPct',
+    'focusLocked',
+    'refSpanFrac',
   ] as const;
   const lines = [cols.join(',')];
   for (const r of records) {

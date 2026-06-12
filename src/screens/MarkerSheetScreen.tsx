@@ -3,6 +3,7 @@ import { BigButton, Card, Field, inputCls, Screen } from '../components/ui';
 import { getConfig } from '../config';
 import { markerMatrix } from '../lib/aruco';
 import { generateMarkerSheet } from '../lib/markerPdf';
+import { getOverridesRaw, saveOverrides } from '../config';
 import { useUiMode } from '../lib/uiMode';
 
 /** Marker sheet generator: exact-mm vector PDF with a print-scale check ruler. */
@@ -25,9 +26,29 @@ export function MarkerSheetScreen({ onBack }: { onBack: () => void }) {
   const cfg = getConfig().reference;
   const basic = useUiMode() === 'basic';
   const [sizeMm, setSizeMm] = useState(String(cfg.defaultMarkerSizeMm));
+  const [rulerMm, setRulerMm] = useState(
+    cfg.printScaleFactor !== 1 ? (cfg.printScaleFactor * 100).toFixed(1) : '',
+  );
+  const [scaleSaved, setScaleSaved] = useState(false);
 
   const s = Number(sizeMm);
   const valid = Number.isFinite(s) && s >= 30 && s <= 150;
+
+  /** Printers run 0.5–1% off; the measured ruler corrects every marker size. */
+  function saveRulerMeasurement(v: string) {
+    setRulerMm(v);
+    setScaleSaved(false);
+    const measured = Number(v);
+    if (!Number.isFinite(measured) || measured < 90 || measured > 110) return;
+    try {
+      const overrides = JSON.parse(getOverridesRaw());
+      overrides.reference = { ...(overrides.reference ?? {}), printScaleFactor: measured / 100 };
+      saveOverrides(overrides);
+      setScaleSaved(true);
+    } catch {
+      /* ignore malformed overrides */
+    }
+  }
 
   return (
     <Screen title={basic ? 'Measuring stickers' : 'Marker sheet'} onBack={onBack}>
@@ -75,6 +96,32 @@ export function MarkerSheetScreen({ onBack }: { onBack: () => void }) {
       >
         {basic ? 'Get the PDF' : 'Generate PDF'}
       </BigButton>
+
+      <Card className="mt-4">
+        <Field
+          label={basic ? 'After printing: what does the ruler measure? (mm)' : 'Measured check-ruler length (mm)'}
+          hint={
+            basic
+              ? "Printers cheat the size a little. Measure the ruler on the printed page with your tape and type it here — we'll correct for it."
+              : 'Sets printScaleFactor = measured/100; applied to every marker size at measurement time. Printers commonly run 0.5–1% off — 10–20 mm across a 2 m window.'
+          }
+        >
+          <input
+            type="number"
+            inputMode="decimal"
+            step="0.1"
+            value={rulerMm}
+            onChange={(e) => saveRulerMeasurement(e.target.value)}
+            className={inputCls}
+            placeholder="100"
+          />
+        </Field>
+        {scaleSaved && (
+          <p className="mt-2 text-sm text-green-400">
+            Saved — marker sizes are now corrected by ×{(Number(rulerMm) / 100).toFixed(4)}.
+          </p>
+        )}
+      </Card>
 
       <Card className="mt-4">
         {basic ? (

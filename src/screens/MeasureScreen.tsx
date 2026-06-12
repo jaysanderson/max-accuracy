@@ -6,8 +6,9 @@ import { db, getActiveProfile } from '../db';
 import { computeHomography, reprojectionErrorRms, type Mat3 } from '../lib/geometry';
 import { buildCorrespondences, solveReference, widthBetween } from '../lib/measure';
 import { runQualityChecks } from '../lib/quality';
+import { extractPatch, matchPatch, toLuma } from '../lib/patchMatch';
 import { session, clearShot } from '../lib/session';
-import { crossChecks } from '../lib/stats';
+import { crossChecks, median } from '../lib/stats';
 import { useUiMode } from '../lib/uiMode';
 import { detectReference, undistortImage } from '../lib/workerClient';
 import type { DetectedMarker, DeviceProfile, MeasureSetup, Pt, QualityCheck, RefMethod } from '../types';
@@ -30,7 +31,8 @@ interface Viewport {
 export function MeasureScreen({ setup, onRetake, onSaved, onAbort }: Props) {
   const cfg = getConfig();
   const basic = useUiMode() === 'basic';
-  const shot = session.shot;
+  const burst = session.burst;
+  const shot = burst ? { meta: burst.meta } : null;
   const masterRef = useRef<HTMLCanvasElement | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -54,13 +56,27 @@ export function MeasureScreen({ setup, onRetake, onSaved, onAbort }: Props) {
   const [windowLabel, setWindowLabel] = useState(setup.windowLabel);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const [failMsg, setFailMsg] = useState('');
+  /** Burst: auxiliary frames' luma + homography, and the combined width stats. */
+  const auxRef = useRef<{ luma: Uint8ClampedArray; H: Mat3 }[]>([]);
+  const masterLumaRef = useRef<Uint8ClampedArray | null>(null);
+  const procCtxRef = useRef<{ prof: DeviceProfile | null; applied: boolean }>({ prof: null, applied: false });
+  const handlesRef = useRef<{ left: Pt; right: Pt } | null>(null);
+  const HRef = useRef<Mat3 | null>(null);
+  const [burstStats, setBurstStats] = useState<{ n: number; medianMm: number; spreadPct: number } | null>(null);
 
   const imgW = shot?.meta.width ?? 0;
   const imgH = shot?.meta.height ?? 0;
 
-  // ---- one-shot pipeline: draw → undistort → detect → solve -----------------
   useEffect(() => {
-    if (!shot) {
+    handlesRef.current = handles;
+  }, [handles]);
+  useEffect(() => {
+    HRef.current = H;
+  }, [H]);
+
+  // ---- pipeline: draw master → undistort → detect → solve (then aux frames) --
+  useEffect(() => {
+    if (!burst || !shot) {
       onAbort();
       return;
     }
@@ -71,7 +87,7 @@ export function MeasureScreen({ setup, onRetake, onSaved, onAbort }: Props) {
       canvas.width = shot.meta.width;
       canvas.height = shot.meta.height;
       const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-      ctx.drawImage(shot.bitmap, 0, 0);
+      ctx.drawImage(burst.frames[0], 0, 0);
 
       // Fit to viewport
       const vpEl = viewportRef.current;
@@ -85,6 +101,7 @@ export function MeasureScreen({ setup, onRetake, onSaved, onAbort }: Props) {
       const prof = await getActiveProfile();
       if (cancelled) return;
       setProfile(prof);
+      procCtxRef.current = { prof, applied: false };
       if (prof) {
         try {
           setStatusMsg(`Undistorting (profile: ${prof.name})…`);
@@ -99,6 +116,7 @@ export function MeasureScreen({ setup, onRetake, onSaved, onAbort }: Props) {
           if (cancelled) return;
           ctx.putImageData(out, 0, 0);
           setProfileApplied(true);
+          procCtxRef.current.applied = true;
         } catch (e) {
           setStatusMsg(`Undistort unavailable (${e instanceof Error ? e.message : 'error'}) — measuring on raw image`);
         }
@@ -190,6 +208,107 @@ export function MeasureScreen({ setup, onRetake, onSaved, onAbort }: Props) {
       right: { x: Math.min(imgW - 8, maxX + pad), y: cy },
     });
     setStage('measure');
+    void processAuxFrames();
+  }
+
+  /**
+   * Burst: each extra frame gets the same undistort + detection + homography,
+   * then the user's datum points are transferred into it by patch matching
+   * (frames share a near-identical pose, so a small NCC search suffices).
+   * The widths across frames are median-combined — corner-detection noise is
+   * independent per frame, which is exactly what averaging kills.
+   */
+  async function processAuxFrames(): Promise<void> {
+    const b = session.burst;
+    if (!b || b.frames.length < 2) return;
+    const master = masterRef.current;
+    if (!master) return;
+    const mctx = master.getContext('2d', { willReadFrequently: true })!;
+    const mimg = mctx.getImageData(0, 0, imgW, imgH);
+    masterLumaRef.current = toLuma(mimg.data, imgW, imgH);
+    const { prof, applied } = procCtxRef.current;
+    const work = document.createElement('canvas');
+    work.width = imgW;
+    work.height = imgH;
+    const wctx = work.getContext('2d', { willReadFrequently: true })!;
+    const aux: { luma: Uint8ClampedArray; H: Mat3 }[] = [];
+    for (let i = 1; i < b.frames.length; i++) {
+      try {
+        wctx.drawImage(b.frames[i], 0, 0);
+        let img = wctx.getImageData(0, 0, imgW, imgH);
+        if (applied && prof) {
+          img = await undistortImage(img, prof.cameraMatrix, prof.distCoeffs, prof.calibratedWidth, prof.calibratedHeight);
+        }
+        const luma = toLuma(img.data, imgW, imgH);
+        const det = await detectReference(img, {
+          wantMarkers: setup.mode !== 'card',
+          wantCard: setup.mode === 'card',
+        });
+        let src: Pt[];
+        let dst: Pt[];
+        if (setup.mode === 'card') {
+          if (!det.cardQuad || det.cardConfidence < cfg.reference.minDetectionConfidence) continue;
+          ({ src, dst } = buildCorrespondences('card', { cardQuad: det.cardQuad }));
+        } else {
+          const need = setup.mode === 'two-marker' ? 2 : 1;
+          const wanted =
+            setup.mode === 'two-marker'
+              ? [cfg.reference.markerIdA, cfg.reference.markerIdB]
+              : [cfg.reference.markerIdSingle];
+          let chosen = det.markers.filter((m) => wanted.includes(m.id));
+          if (chosen.length < need) chosen = det.markers;
+          if (chosen.length < need) continue;
+          ({ src, dst } = buildCorrespondences(setup.mode, {
+            markers: chosen.slice(0, need),
+            markerSizeMm: setup.markerSizeMm,
+            markerSeparationMm: setup.markerSeparationMm,
+          }));
+        }
+        const sol = await solveReference(src, dst);
+        if (sol.reprojErrMm > cfg.quality.reprojRedMm) continue; // bad frame — drop
+        aux.push({ luma, H: sol.H });
+      } catch {
+        continue; // a dropped frame just reduces the burst
+      }
+    }
+    auxRef.current = aux;
+    recomputeBurst();
+  }
+
+  /** Combine widths across burst frames for the CURRENT handle positions. */
+  function recomputeBurst(): void {
+    const h = handlesRef.current;
+    const Hm = HRef.current;
+    const aux = auxRef.current;
+    const mLuma = masterLumaRef.current;
+    if (!h || !Hm || !aux.length || !mLuma) {
+      setBurstStats(null);
+      return;
+    }
+    const PATCH_R = 24;
+    const SEARCH = 24;
+    const MIN_NCC = 0.5;
+    const widths = [widthBetween(Hm, h.left, h.right)];
+    const patchL = extractPatch(mLuma, imgW, imgH, h.left.x, h.left.y, PATCH_R);
+    const patchR = extractPatch(mLuma, imgW, imgH, h.right.x, h.right.y, PATCH_R);
+    if (patchL && patchR) {
+      for (const f of aux) {
+        const mL = matchPatch(f.luma, imgW, imgH, patchL, PATCH_R, h.left.x, h.left.y, SEARCH);
+        const mR = matchPatch(f.luma, imgW, imgH, patchR, PATCH_R, h.right.x, h.right.y, SEARCH);
+        if (!mL || !mR || mL.score < MIN_NCC || mR.score < MIN_NCC) continue;
+        widths.push(widthBetween(f.H, mL.point, mR.point));
+      }
+    }
+    if (widths.length < 2) {
+      setBurstStats(null);
+      return;
+    }
+    const med = median(widths)!;
+    setBurstStats({
+      n: widths.length,
+      medianMm: med,
+      spreadPct: med > 0 ? ((Math.max(...widths) - Math.min(...widths)) / med) * 100 : 0,
+    });
   }
 
   function confirmManualCorners() {
@@ -210,10 +329,15 @@ export function MeasureScreen({ setup, onRetake, onSaved, onAbort }: Props) {
     const cy = corners.reduce((s, p) => s + p.y, 0) / 4;
     setHandles({ left: { x: imgW * 0.2, y: cy }, right: { x: imgW * 0.8, y: cy } });
     setStage('measure');
+    auxRef.current = [];
+    setBurstStats(null);
+    void processAuxFrames();
   }
 
   // ---- live width ------------------------------------------------------------
-  const widthMm = H && handles ? widthBetween(H, handles.left, handles.right) : null;
+  // Live drag tracks the master frame; on release the burst median takes over.
+  const masterWidthMm = H && handles ? widthBetween(H, handles.left, handles.right) : null;
+  const widthMm = dragPoint === null && burstStats ? burstStats.medianMm : masterWidthMm;
 
   const quality =
     stage === 'measure' && shot
@@ -228,6 +352,12 @@ export function MeasureScreen({ setup, onRetake, onSaved, onAbort }: Props) {
           markerSizeMm: setup.markerSizeMm,
           overridden: shot.meta.overridden,
           refMethod,
+          burstSpreadPct: burstStats?.spreadPct ?? null,
+          refSpanFrac: shot.meta.refSpanFrac,
+          profileAgeDays:
+            profileApplied && profile
+              ? (Date.now() - new Date(profile.createdAt).getTime()) / 86400000
+              : null,
         })
       : null;
 
@@ -308,9 +438,12 @@ export function MeasureScreen({ setup, onRetake, onSaved, onAbort }: Props) {
     pointers.current.delete(e.pointerId);
     if (pointers.current.size < 2) pinchStart.current = null;
     if (pointers.current.size === 0) {
+      const wasDatumHandle = dragTarget.current === 'left' || dragTarget.current === 'right';
       dragTarget.current = null;
       panStart.current = null;
       setDragPoint(null);
+      // NCC across frames is too heavy per drag-move; do it once on release.
+      if (wasDatumHandle) window.setTimeout(() => recomputeBurst(), 0);
     }
   };
 
@@ -358,6 +491,10 @@ export function MeasureScreen({ setup, onRetake, onSaved, onAbort }: Props) {
       windowLabel: windowLabel.trim(),
       markerSizeMm: setup.mode === 'card' ? null : setup.markerSizeMm,
       markerSeparationMm: setup.mode === 'two-marker' ? setup.markerSeparationMm : null,
+      burstCount: burstStats?.n ?? 1,
+      widthSpreadPct: burstStats?.spreadPct ?? null,
+      focusLocked: shot.meta.focusLocked,
+      refSpanFrac: shot.meta.refSpanFrac,
       thumb,
     });
 
@@ -533,7 +670,12 @@ export function MeasureScreen({ setup, onRetake, onSaved, onAbort }: Props) {
                   {widthMm !== null ? widthMm.toFixed(0) : '—'}
                   <span className="ml-1 text-xl text-zinc-400">mm</span>
                 </div>
-                <div className="mt-1">
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  {burstStats && (
+                    <span className="text-xs text-zinc-400">
+                      {burstStats.n} photos · spread {((burstStats.spreadPct / 100) * burstStats.medianMm).toFixed(1)} mm
+                    </span>
+                  )}
                   <Chip level={quality.confidence}>
                     {quality.confidence === 'green'
                       ? '✓ Good measurement'
@@ -591,6 +733,12 @@ export function MeasureScreen({ setup, onRetake, onSaved, onAbort }: Props) {
                   {reprojErrMm !== null && (
                     <Chip level="neutral">reproj {reprojErrMm.toFixed(2)} mm</Chip>
                   )}
+                  {burstStats && (
+                    <Chip level="neutral">
+                      burst {burstStats.n} · spread {burstStats.spreadPct.toFixed(2)}%
+                    </Chip>
+                  )}
+                  {shot?.meta.focusLocked && <Chip level="neutral">AF locked</Chip>}
                 </div>
               </div>
               <div className="flex flex-col gap-2">
@@ -628,11 +776,16 @@ export function MeasureScreen({ setup, onRetake, onSaved, onAbort }: Props) {
       {saveOpen && (
         <div className="absolute inset-0 z-50 flex items-end justify-center bg-black/70" onClick={() => setSaveOpen(false)}>
           <div className="w-full max-w-md rounded-t-2xl bg-zinc-900 p-5 pb-8" onClick={(e) => e.stopPropagation()}>
-            <h2 className="mb-3 text-lg font-bold text-white">
+            <h2 className="mb-1 text-lg font-bold text-white">
               {basic
                 ? `Save — ${widthMm?.toFixed(0)} mm`
                 : `Save measurement — ${widthMm?.toFixed(1)} mm (${setup.datum})`}
             </h2>
+            <p className="mb-3 text-xs text-zinc-500">
+              {setup.mode === 'two-marker'
+                ? 'Typical accuracy for two stickers: ±10 mm (better with the photo burst). Below ~5 mm, check with a laser meter.'
+                : 'Typical accuracy for this method: ±20–40 mm — fine for quoting; use two stickers for manufacture-grade numbers.'}
+            </p>
             {setup.testMode && (
               <Field
                 label={basic ? 'Tape measure says… (mm, optional)' : 'True width (tape-measured), mm'}

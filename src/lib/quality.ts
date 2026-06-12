@@ -18,6 +18,12 @@ export interface QualityInputs {
   markerSizeMm: number | null;
   overridden: boolean;
   refMethod: 'auto' | 'manual';
+  /** Width spread across burst frames, % of width (null = single frame). */
+  burstSpreadPct: number | null;
+  /** Reference span / frame width at capture (two-marker only; null otherwise). */
+  refSpanFrac: number | null;
+  /** Age of the applied device profile in days (null = no profile applied). */
+  profileAgeDays: number | null;
 }
 
 export function runQualityChecks(q: QualityInputs): { checks: QualityCheck[]; confidence: Confidence } {
@@ -143,7 +149,46 @@ export function runQualityChecks(q: QualityInputs): { checks: QualityCheck[]; co
     });
   }
 
-  // 6. Gating override
+  // 6. Burst agreement: frames disagreeing means something moved or detection jittered
+  if (q.burstSpreadPct !== null) {
+    if (q.burstSpreadPct > cfg.burstSpreadAmberPct) {
+      checks.push({
+        id: 'burst',
+        label: 'Burst agreement',
+        level: 'amber',
+        detail: `The burst photos disagree by ${q.burstSpreadPct.toFixed(2)}% — hold stiller and retake if this measurement is critical.`,
+      });
+    } else {
+      checks.push({
+        id: 'burst',
+        label: 'Burst agreement',
+        level: 'green',
+        detail: `Burst photos agree within ${q.burstSpreadPct.toFixed(2)}%.`,
+      });
+    }
+  }
+
+  // 7. Frame fill: accuracy degrades when the subject is small in frame
+  if (q.refSpanFrac !== null && q.refSpanFrac < getConfig().capture.minReferenceSpanFrac) {
+    checks.push({
+      id: 'framefill',
+      label: 'Frame fill',
+      level: 'amber',
+      detail: `The window only spans ${(q.refSpanFrac * 100).toFixed(0)}% of the frame — step closer next time for more pixels on the measurement.`,
+    });
+  }
+
+  // 8. Profile staleness: phone intrinsics drift (floating lens elements)
+  if (q.profileAgeDays !== null && q.profileAgeDays > cfg.profileStaleDays) {
+    checks.push({
+      id: 'stale',
+      label: 'Profile age',
+      level: 'amber',
+      detail: `The applied lens profile is ${Math.round(q.profileAgeDays)} days old — phone optics drift; re-run the straight-edge check and recalibrate if it has degraded.`,
+    });
+  }
+
+  // 9. Gating override
   if (q.overridden) {
     checks.push({
       id: 'override',

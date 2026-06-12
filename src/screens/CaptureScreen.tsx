@@ -37,6 +37,7 @@ export function CaptureScreen({ setup, onCaptured, onBack }: Props) {
   const [gridOn, setGridOn] = useState(true);
   const [gates, setGates] = useState(cfg.gates);
   const [busy, setBusy] = useState(false);
+  const [burstProgress, setBurstProgress] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const analysisRef = useRef<PreviewAnalysis | null>(null);
   const tiltRef = useRef<{ pitchDeg: number; rollDeg: number } | null>(null);
@@ -202,6 +203,15 @@ export function CaptureScreen({ setup, onCaptured, onBack }: Props) {
 
   const gateStates = evalGates();
 
+  /** Reference span as a fraction of frame width — frame-fill discipline.
+   * Only meaningful in two-marker mode, where the markers bracket the window. */
+  function currentRefSpanFrac(): number | null {
+    const a = analysisRef.current;
+    if (!a || !a.frameW || setup.mode !== 'two-marker' || a.markers.length < 2) return null;
+    const xs = a.markers.flatMap((m) => m.corners.map((c) => c.x));
+    return (Math.max(...xs) - Math.min(...xs)) / a.frameW;
+  }
+
   /** Basic mode shows ONE plain instruction at a time, in fix-it order. */
   function basicInstruction(): string | null {
     if (!cam.ready) return 'Starting the camera…';
@@ -218,6 +228,10 @@ export function CaptureScreen({ setup, onCaptured, onBack }: Props) {
       if (setup.mode === 'card') return 'Hold the card flat on the wall beside the window';
       if (setup.mode === 'two-marker') return 'Get both stickers in the picture';
       return 'Get the sticker in the picture';
+    }
+    const span = currentRefSpanFrac();
+    if (span !== null && span < cfg.capture.minReferenceSpanFrac) {
+      return 'Step closer — fill the screen with the window'; // soft hint, doesn't block
     }
     return null;
   }
@@ -237,29 +251,52 @@ export function CaptureScreen({ setup, onCaptured, onBack }: Props) {
     async (overridden: boolean) => {
       if (busy) return;
       setBusy(true);
+      const n = Math.max(1, cfg.capture.burstCount);
+      let focusLocked = false;
       try {
-        const shot = await cam.captureFullRes();
+        // Lock AF/AE for the whole burst so every frame shares intrinsics.
+        if (cfg.capture.lockFocusOnArm) focusLocked = await cam.lockCapture();
         const t = tiltRef.current;
         const a = analysisRef.current;
+        const gatesAtCapture = evalGates();
+        const spanAtCapture = currentRefSpanFrac();
+        const frames: ImageBitmap[] = [];
+        let first: { width: number; height: number; source: 'ImageCapture' | 'videoFrame' } | null = null;
+        for (let i = 0; i < n; i++) {
+          if (n > 1) setBurstProgress(`Hold still — photo ${i + 1} of ${n}`);
+          const shot = await cam.captureFullRes();
+          // Frames must share resolution for cross-frame matching; drop odd ones.
+          if (first && (shot.width !== first.width || shot.height !== first.height)) {
+            shot.bitmap.close();
+            continue;
+          }
+          if (!first) first = { width: shot.width, height: shot.height, source: shot.source };
+          frames.push(shot.bitmap);
+        }
+        if (!first) throw new Error('Capture failed');
         const meta: CaptureMeta = {
           timestamp: new Date().toISOString(),
           pitchDeg: t?.pitchDeg ?? null,
           rollDeg: t?.rollDeg ?? null,
           convergenceDeg: a?.convergenceDeg ?? null,
-          gates: evalGates(),
+          gates: gatesAtCapture,
           overridden,
-          width: shot.width,
-          height: shot.height,
+          width: first.width,
+          height: first.height,
           deviceLabel: deviceLabel(),
-          captureSource: shot.source,
+          captureSource: first.source,
+          focusLocked,
+          refSpanFrac: spanAtCapture,
         };
-        session.shot?.bitmap.close();
-        session.shot = { bitmap: shot.bitmap, meta };
+        for (const f of session.burst?.frames ?? []) f.close();
+        session.burst = { frames, meta };
         onCaptured();
       } catch (e) {
         setFlash(e instanceof Error ? e.message : 'Capture failed');
         setTimeout(() => setFlash(null), 2500);
       } finally {
+        setBurstProgress(null);
+        if (focusLocked) void cam.unlockCapture();
         setBusy(false);
       }
     },
@@ -426,6 +463,12 @@ export function CaptureScreen({ setup, onCaptured, onBack }: Props) {
           <div className="rounded-full bg-amber-400 px-4 py-1.5 text-sm font-bold text-black">{flash}</div>
         )}
       </div>
+
+      {burstProgress && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50">
+          <p className="rounded-2xl bg-black/80 px-6 py-3 text-xl font-bold text-white">{burstProgress}</p>
+        </div>
+      )}
 
       {/* shutter */}
       <div className="absolute inset-x-0 bottom-6 flex flex-col items-center gap-2">

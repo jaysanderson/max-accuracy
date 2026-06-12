@@ -16,24 +16,24 @@ const MODES: { id: RefMode; basic: string; basicDesc: string; adv: string; advDe
   {
     id: 'two-marker',
     basic: 'Two stickers beside the window',
-    basicDesc: 'One on the wall each side of the window, level with each other. Most accurate — best for wide windows.',
+    basicDesc: 'One on the wall each side of the window, level with each other. Typically within ±10 mm — the 3-photo burst sharpens it further.',
     adv: 'Two markers',
-    advDesc: 'Markers on the wall plane each side of the opening at known separation. The scale baseline spans the opening — ≤1% target.',
+    advDesc: 'Markers on the wall plane each side of the opening at known separation. Scale baseline spans the opening — ~0.5% (≈10 mm) single shot, 2–4 mm with burst + verified print scale.',
     badge: 'Most accurate',
   },
   {
     id: 'single-marker',
     basic: 'One sticker beside the window',
-    basicDesc: 'Quick. Fine for narrow windows.',
+    basicDesc: 'Quick. Fine for narrow windows — expect ±20–40 mm on wide ones.',
     adv: 'Single marker',
-    advDesc: 'One printed marker of known size on the wall plane. Scale error amplifies on wide openings.',
+    advDesc: 'One printed marker of known size on the wall plane. Scale amplifies on wide openings — quote-grade (~1–2%, 20–40 mm).',
   },
   {
     id: 'card',
     basic: 'A bank card held against the wall',
-    basicDesc: 'No stickers needed. Hold any standard card flat on the wall beside the window.',
+    basicDesc: 'No stickers needed. Good for quick quotes (within a few cm) — use stickers when it has to be exact.',
     adv: 'Bank card',
-    advDesc: 'ISO ID-1 card (85.60 × 53.98 mm) held flat on the wall plane. Zero prep, largest amplification.',
+    advDesc: 'ISO ID-1 card (85.60 × 53.98 mm) held flat on the wall plane. Zero prep, largest amplification — quote-grade (~1–2%).',
   },
 ];
 

@@ -50,7 +50,9 @@ export function buildCorrespondences(
       ],
     };
   }
-  const size = opts.markerSizeMm ?? cfg.defaultMarkerSizeMm;
+  // Printed markers inherit the printer's scale error (0.5–1% is common);
+  // printScaleFactor is set from a tape measurement of the sheet's check ruler.
+  const size = (opts.markerSizeMm ?? cfg.defaultMarkerSizeMm) * cfg.printScaleFactor;
   const markers = opts.markers ?? [];
   if (mode === 'single-marker') {
     if (markers.length < 1) throw new Error('No marker detected');

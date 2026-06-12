@@ -19,6 +19,12 @@ export interface AppConfig {
     /** Ideal capture resolution requested from the camera. */
     idealCaptureWidth: number;
     idealCaptureHeight: number;
+    /** Frames captured per shot; widths are median-combined. 1 = single shot. */
+    burstCount: number;
+    /** Lock focus/exposure/white balance for the duration of a capture (where the browser supports it). */
+    lockFocusOnArm: boolean;
+    /** Below this fraction of frame width spanned by the reference, hint "step closer". */
+    minReferenceSpanFrac: number;
   };
   gates: {
     /** Each gate individually toggleable. */
@@ -36,6 +42,8 @@ export interface AppConfig {
     defaultMarkerSeparationMm: number;
     /** Below this detection score the reference is treated as not locked / low confidence. */
     minDetectionConfidence: number;
+    /** Printed-scale correction: measured ruler mm / 100 (printers run 0.5–1% off). */
+    printScaleFactor: number;
     /** Marker ids printed on the sheet and expected in the field. */
     markerIdA: number;
     markerIdB: number;
@@ -54,6 +62,11 @@ export interface AppConfig {
     markerScaleMismatchTolerance: number;
     /** Cross-check agreement tolerance, percent of width. */
     crossCheckTolerancePct: number;
+    /** Burst frames disagreeing beyond this percent of width → amber. */
+    burstSpreadAmberPct: number;
+    /** Profiles / diagnostics older than this are flagged (phone intrinsics drift). */
+    profileStaleDays: number;
+    diagnosticStaleDays: number;
   };
   diagnostic: {
     /** Edge bow above this % of frame width → verdict "distortion present". */
@@ -86,6 +99,9 @@ export const DEFAULT_CONFIG: AppConfig = {
     overrideLongPressMs: 800,
     idealCaptureWidth: 4096,
     idealCaptureHeight: 3072,
+    burstCount: 3,
+    lockFocusOnArm: true,
+    minReferenceSpanFrac: 0.4,
   },
   gates: { tilt: true, edges: true, referenceLock: true },
   reference: {
@@ -94,6 +110,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     defaultMarkerSizeMm: 60,
     defaultMarkerSeparationMm: 1600,
     minDetectionConfidence: 0.5,
+    printScaleFactor: 1.0,
     markerIdA: 0,
     markerIdB: 1,
     markerIdSingle: 2,
@@ -106,6 +123,9 @@ export const DEFAULT_CONFIG: AppConfig = {
     cardDiagonalRatioTolerance: 0.05,
     markerScaleMismatchTolerance: 0.06,
     crossCheckTolerancePct: 1.0,
+    burstSpreadAmberPct: 0.5,
+    profileStaleDays: 30,
+    diagnosticStaleDays: 30,
   },
   diagnostic: {
     bowVerdictPctOfFrame: 0.1,

@@ -67,6 +67,8 @@ export interface PreviewAnalysis {
   markers: DetectedMarker[];
   cardQuad: Pt[] | null;
   cardConfidence: number;
+  frameW: number;
+  frameH: number;
 }
 
 export function analyzePreview(
