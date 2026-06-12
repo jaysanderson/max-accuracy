@@ -6,10 +6,19 @@
 
 export interface AppConfig {
   capture: {
-    /** Pitch/roll gate: shutter arms only within this tilt (degrees). */
+    /** Pitch/roll gate: shutter arms only within this tilt (degrees).
+     * Looser than the quality amber threshold on purpose: the gate prevents
+     * bad shots, the quality engine grades marginal ones. */
     pitchRollThresholdDeg: number;
     /** Yaw gate: max convergence angle between detected top/bottom window edges (degrees). */
     edgeConvergenceThresholdDeg: number;
+    /** Median window for the convergence signal (raw Hough angles are noisy). */
+    convergenceMedianWindow: number;
+    /** A gate that passed within this window still counts — stops the shutter
+     * flickering out of "armed" between analysis frames. */
+    gateGraceMs: number;
+    /** Reference lock persists this long after the last successful detection. */
+    referenceLockHoldMs: number;
     /** Preview frames are downscaled to this height before worker analysis. */
     previewAnalysisHeight: number;
     /** Preview analysis rate (frames per second, throttled). */
@@ -92,8 +101,11 @@ export interface AppConfig {
 
 export const DEFAULT_CONFIG: AppConfig = {
   capture: {
-    pitchRollThresholdDeg: 3,
-    edgeConvergenceThresholdDeg: 1.5,
+    pitchRollThresholdDeg: 5,
+    edgeConvergenceThresholdDeg: 3,
+    convergenceMedianWindow: 5,
+    gateGraceMs: 900,
+    referenceLockHoldMs: 2000,
     previewAnalysisHeight: 480,
     previewAnalysisFps: 4,
     overrideLongPressMs: 800,

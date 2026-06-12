@@ -44,6 +44,10 @@ export function CaptureScreen({ setup, onCaptured, onBack }: Props) {
   const inFlight = useRef(false);
   const longPressTimer = useRef<number | null>(null);
   const longPressFired = useRef(false);
+  /** Stability state: raw per-frame signals are too jumpy to gate on directly. */
+  const convHist = useRef<{ v: number; t: number }[]>([]);
+  const lastLockAt = useRef(0);
+  const lastAllPassAt = useRef(0);
 
   // --- sensor horizon -------------------------------------------------------
   useEffect(() => {
@@ -85,6 +89,21 @@ export function CaptureScreen({ setup, onCaptured, onBack }: Props) {
           wantCard: setup.mode === 'card',
         });
         analysisRef.current = res;
+        const now = performance.now();
+        // Convergence: keep a short history for median smoothing.
+        if (res.convergenceDeg !== null) {
+          convHist.current.push({ v: res.convergenceDeg, t: now });
+          convHist.current = convHist.current
+            .filter((e) => now - e.t < 2500)
+            .slice(-getConfig().capture.convergenceMedianWindow);
+        }
+        // Reference lock: remember when we last positively saw the reference.
+        const needed = setup.mode === 'two-marker' ? 2 : setup.mode === 'single-marker' ? 1 : 0;
+        const rawLocked =
+          setup.mode === 'card'
+            ? res.cardQuad !== null && res.cardConfidence >= getConfig().reference.minDetectionConfidence
+            : res.markers.length >= needed;
+        if (rawLocked) lastLockAt.current = now;
         setAnalysis(res);
       } catch {
         /* worker not ready yet */
@@ -162,17 +181,25 @@ export function CaptureScreen({ setup, onCaptured, onBack }: Props) {
       else if (Math.abs(t.rollDeg) > thr) tiltHint = t.rollDeg > 0 ? `level — rotate anticlockwise ${Math.abs(t.rollDeg).toFixed(0)}°` : `level — rotate clockwise ${Math.abs(t.rollDeg).toFixed(0)}°`;
     } else tiltHint = 'waiting for motion sensors';
 
-    const conv = a?.convergenceDeg ?? null;
+    // Median-smoothed convergence: a single noisy Hough frame can't flip the gate.
+    const hist = convHist.current.filter((e) => performance.now() - e.t < 2500);
+    let conv: number | null = null;
+    if (hist.length) {
+      const sorted = hist.map((e) => e.v).sort((x, y) => x - y);
+      conv = sorted[Math.floor(sorted.length / 2)];
+    }
     const convThr = cfg.capture.edgeConvergenceThresholdDeg;
     // Convergence sign: + → far side is the right → step right (see worker).
     const edgeHint =
       conv === null ? 'no window edges detected yet' : conv > convThr ? 'step right' : conv < -convThr ? 'step left' : '';
 
     const markersNeeded = setup.mode === 'two-marker' ? 2 : setup.mode === 'single-marker' ? 1 : 0;
-    const locked =
+    // Detection flickers frame to frame; a recent positive lock still counts.
+    const rawLocked =
       setup.mode === 'card'
         ? (a?.cardQuad ?? null) !== null && (a?.cardConfidence ?? 0) >= cfg.reference.minDetectionConfidence
         : (a?.markers.length ?? 0) >= markersNeeded;
+    const locked = rawLocked || performance.now() - lastLockAt.current < cfg.capture.referenceLockHoldMs;
     const lockHint = locked
       ? ''
       : setup.mode === 'card'
@@ -244,7 +271,10 @@ export function CaptureScreen({ setup, onCaptured, onBack }: Props) {
     if (k === 'referenceLock') return g.passed !== true;
     return g.passed === false;
   });
-  const armed = cam.ready && blocking.length === 0;
+  // Sticky arming: gates that all passed within the grace window keep the
+  // shutter armed, so the tap you aimed at a green button still lands.
+  if (cam.ready && blocking.length === 0) lastAllPassAt.current = performance.now();
+  const armed = cam.ready && (blocking.length === 0 || performance.now() - lastAllPassAt.current < cfg.capture.gateGraceMs);
 
   // --- capture ---------------------------------------------------------------
   const doCapture = useCallback(
@@ -317,13 +347,13 @@ export function CaptureScreen({ setup, onCaptured, onBack }: Props) {
     if (armed) void doCapture(false);
     else {
       const reasons = basic
-        ? (basicInstruction() ?? 'Not ready yet — hold on')
+        ? `${basicInstruction() ?? 'Not ready yet'} — or press and HOLD to take it anyway`
         : blocking
             .map((k) => gateStates[k].hint || k)
             .filter(Boolean)
             .join(' · ');
       setFlash(reasons || 'not ready');
-      setTimeout(() => setFlash(null), 2000);
+      setTimeout(() => setFlash(null), 2600);
     }
   };
 
@@ -490,7 +520,7 @@ export function CaptureScreen({ setup, onCaptured, onBack }: Props) {
               ? 'Ready — tap to take the photo'
               : 'Ready — tap to capture'
             : basic
-              ? 'Follow the tip above — the button turns green when the shot is good'
+              ? 'Follow the tip — or press and hold the button to shoot anyway'
               : 'Blocked — long-press to override (stamps amber)'}
         </span>
       </div>
